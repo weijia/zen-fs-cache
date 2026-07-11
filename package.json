@@ -1,0 +1,61 @@
+{
+  "name": "zen-fs-cache",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Generic caching layer for any zen-fs compatible filesystem. Adds HTTP-style revalidation (ETag / Last-Modified / 304) and pluggable storage backends (memory / IndexedDB) on top of any remote or local zen-fs backend.",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf dist",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "zen-fs",
+    "filesystem",
+    "cache",
+    "remotestorage",
+    "etag",
+    "http-cache",
+    "typescript"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/weijia/zen-fs-cache.git"
+  },
+  "bugs": {
+    "url": "https://github.com/weijia/zen-fs-cache/issues"
+  },
+  "homepage": "https://github.com/weijia/zen-fs-cache#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "peerDependencies": {
+    "@zenfs/core": ">=2.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.12",
+    "rimraf": "^5.0.10",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
