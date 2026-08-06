@@ -1,8 +1,4 @@
-import type {
-  CacheableFileSystem,
-  CacheStore,
-  CacheValue,
-} from './types.js';
+import type { CacheableFileSystem, CacheStore } from './types.js';
 
 function strToBytes(s: string): Uint8Array {
   return new TextEncoder().encode(s);
@@ -18,7 +14,10 @@ export interface CachedFileSystemOptions {
    * Optimistic time-to-live in milliseconds. While an entry is younger than
    * this, reads are served directly from the cache *without* hitting the
    * network at all. Set to `0` (default) to always re-validate with the
-   * backend via a conditional request (cheap `304` when unchanged).
+   * backend via `getRevision` (or `readFileMeta`).
+   *
+   * Ignored when `getRevision` is implemented — the revision check is exact,
+   * so there is no need for a TTL.
    */
   ttlMs?: number;
 }
@@ -30,14 +29,16 @@ export interface CachedFileSystemOptions {
  *   so it is a drop-in replacement (including for `universal-sync-v2`'s
  *   `IFileSystem`).
  * - Reads go through the cache store. When the backend implements
- *   `readFileMeta`, conditional (`If-None-Match` / `If-Modified-Since`)
- *   requests are used so unchanged content returns a cheap `304`. Otherwise
- *   `getRevision` (ETag / mtimeMs / hash) is used for cheap revalidation.
+ *   `getRevision`, it is used as the preferred revalidation mechanism (a
+ *   single lightweight request — or zero for Git backends). Otherwise
+ *   `readFileMeta` (HTTP conditional GET / 304) is used. If neither hook
+ *   is available, a TTL-based fallback returns the cached value.
  * - Mutating operations (`writeFile` / `unlink` / `mkdir` / `rmdir` / `rename`)
- *   invalidate the affected cache entries, so subsequent reads re-validate.
- * - On network failure, the last known-good cached value is returned as a
- *   fallback (except for a `404`, which is always re-thrown so deletions are
- *   noticed).
+ *   either **update** or **invalidate** the affected cache entries depending
+ *   on whether `getRevision` is implemented.
+ * - On network failure (non-404), the last known-good cached value is
+ *   returned as a fallback (except for a `404`, which is always re-thrown so
+ *   deletions are noticed).
  *
  * Because only the *interface* is required, any backend that implements the
  * optional hooks gets caching for free — there is no per-backend cache code.
@@ -61,11 +62,39 @@ export class CachedFileSystem {
   // Cache helpers
   // ---------------------------------------------------------------------------
 
+  /**
+   * Invalidate all cache entries (file, dir, stat) for the given paths,
+   * plus the parent directory of each path.
+   */
   private async invalidate(...paths: string[]): Promise<void> {
     const keys: string[] = [];
     for (const p of paths) {
       const np = p.startsWith('/') ? p : `/${p}`;
       keys.push(`file:${np}`, `dir:${np}`, `stat:${np}`);
+      const slash = np.lastIndexOf('/');
+      const parent = slash > 0 ? np.slice(0, slash) : '';
+      if (parent) keys.push(`dir:${parent}`);
+    }
+    for (const k of keys) {
+      try {
+        await this.store.delete(k);
+      } catch {
+        // best-effort
+      }
+    }
+  }
+
+  /**
+   * Invalidate only stat and parent-dir entries (not the file content cache).
+   * Used after `writeFile` when the file cache is updated in-place — the stat
+   * must still be invalidated because size/mtime changed, and the parent dir
+   * listing may have changed (new file).
+   */
+  private async invalidateMeta(...paths: string[]): Promise<void> {
+    const keys: string[] = [];
+    for (const p of paths) {
+      const np = p.startsWith('/') ? p : `/${p}`;
+      keys.push(`stat:${np}`);
       const slash = np.lastIndexOf('/');
       const parent = slash > 0 ? np.slice(0, slash) : '';
       if (parent) keys.push(`dir:${parent}`);
@@ -87,6 +116,13 @@ export class CachedFileSystem {
     );
   }
 
+  /** Convert any supported write data type to `Uint8Array`. */
+  private toBytes(data: string | Uint8Array | ArrayBuffer): Uint8Array {
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    return new TextEncoder().encode(data);
+  }
+
   // ---------------------------------------------------------------------------
   // Reads (cached)
   // ---------------------------------------------------------------------------
@@ -95,10 +131,41 @@ export class CachedFileSystem {
     const key = `file:${path}`;
     const cached = await this.store.get(key);
 
+    // 1. TTL fast path — return cached value without any network access.
     if (cached && this.ttlMs > 0 && Date.now() - cached.cachedAt < this.ttlMs) {
       return cached.value;
     }
 
+    // 2. getRevision — preferred revalidation mechanism.
+    if (typeof this.inner.getRevision === 'function') {
+      try {
+        const rev = await this.inner.getRevision(path);
+        if (rev != null) {
+          // Revision available — compare with cached value.
+          if (cached && rev === cached.revision) {
+            return cached.value; // cache hit — zero content download
+          }
+          // Revision differs (or no cached value) — re-read and update cache.
+          try {
+            const data = await this.inner.readFile(path);
+            await this.store.set(key, {
+              value: data,
+              revision: rev,
+              cachedAt: Date.now(),
+            });
+            return data;
+          } catch (err) {
+            if (cached && !this.isNotFound(err)) return cached.value; // offline fallback
+            throw err;
+          }
+        }
+        // rev === undefined → fall through to readFileMeta
+      } catch {
+        // getRevision itself failed → fall through to readFileMeta
+      }
+    }
+
+    // 3. readFileMeta — HTTP conditional GET fallback.
     if (typeof this.inner.readFileMeta === 'function') {
       try {
         const res = await this.inner.readFileMeta(path, {
@@ -123,20 +190,10 @@ export class CachedFileSystem {
       }
     }
 
-    // Fallback: generic revision check, then plain read.
-    if (typeof this.inner.getRevision === 'function') {
-      try {
-        const rev = await this.inner.getRevision(path);
-        if (cached && rev != null && rev === cached.revision) return cached.value;
-      } catch {
-        // ignore
-      }
-    }
-
+    // 4. Full read — no hooks available, or hooks returned undefined.
     const data = await this.inner.readFile(path);
     await this.store.set(key, {
       value: data,
-      revision: undefined,
       cachedAt: Date.now(),
     });
     return data;
@@ -146,10 +203,12 @@ export class CachedFileSystem {
     const key = `dir:${path}`;
     const cached = await this.store.get(key);
 
+    // 1. TTL fast path
     if (cached && this.ttlMs > 0 && Date.now() - cached.cachedAt < this.ttlMs) {
       return JSON.parse(bytesToStr(cached.value)) as string[];
     }
 
+    // 2. getRevision
     if (typeof this.inner.getRevision === 'function') {
       try {
         const rev = await this.inner.getRevision(path);
@@ -161,8 +220,10 @@ export class CachedFileSystem {
       }
     }
 
+    // 3. Full read
     const items = await this.inner.readdir(path);
 
+    // Store with revision token for future revalidation
     let rev: string | number | undefined;
     if (typeof this.inner.getRevision === 'function') {
       try {
@@ -184,10 +245,12 @@ export class CachedFileSystem {
     const key = `stat:${path}`;
     const cached = await this.store.get(key);
 
+    // 1. TTL fast path
     if (cached && this.ttlMs > 0 && Date.now() - cached.cachedAt < this.ttlMs) {
       return JSON.parse(bytesToStr(cached.value));
     }
 
+    // 2. getRevision
     if (typeof this.inner.getRevision === 'function') {
       try {
         const rev = await this.inner.getRevision(path);
@@ -199,8 +262,10 @@ export class CachedFileSystem {
       }
     }
 
+    // 3. Full read
     const st = await this.inner.stat(path);
 
+    // Store with revision token for future revalidation
     let rev: string | number | undefined;
     if (typeof this.inner.getRevision === 'function') {
       try {
@@ -229,7 +294,7 @@ export class CachedFileSystem {
   }
 
   // ---------------------------------------------------------------------------
-  // Writes / mutations (delegated + invalidated)
+  // Writes / mutations
   // ---------------------------------------------------------------------------
 
   async writeFile(
@@ -238,7 +303,38 @@ export class CachedFileSystem {
     options?: { flag?: string },
   ): Promise<void> {
     await this.inner.writeFile(path, data, options);
-    await this.invalidate(path);
+
+    if (typeof this.inner.getRevision === 'function') {
+      // Update the file cache with the new content + a fresh revision token.
+      // This avoids a redundant re-download on the next read.
+      const bytes = this.toBytes(data);
+      try {
+        const rev = await this.inner.getRevision(path);
+        await this.store.set(`file:${path}`, {
+          value: bytes,
+          revision: rev,
+          cachedAt: Date.now(),
+        });
+      } catch {
+        // If getRevision fails, fall back to invalidating the file cache.
+        try {
+          await this.store.delete(`file:${path}`);
+        } catch {
+          // best-effort
+        }
+      }
+    } else {
+      // No getRevision — invalidate the file cache so the next read re-fetches.
+      try {
+        await this.store.delete(`file:${path}`);
+      } catch {
+        // best-effort
+      }
+    }
+
+    // Always invalidate stat and parent dir — file size/mtime changed,
+    // and the parent directory listing may have changed (new file).
+    await this.invalidateMeta(path);
   }
 
   async unlink(path: string): Promise<void> {
