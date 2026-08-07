@@ -21,6 +21,7 @@ export { CachedFileSystem } from './cached-file-system.js';
 export type { CachedFileSystemOptions } from './cached-file-system.js';
 
 export { MemoryCacheStore, IdbCacheStore, createDefaultCache } from './cache-store.js';
+export { IdbKVStore } from './idb-kv-store.js';
 
 export type {
   CacheStore,
