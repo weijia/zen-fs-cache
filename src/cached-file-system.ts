@@ -285,10 +285,16 @@ export class CachedFileSystem {
 
   async exists(path: string): Promise<boolean> {
     try {
+      console.log(`[CACHE-TRACE] exists(${path}): calling inner.stat()`);
       await this.inner.stat(path);
+      console.log(`[CACHE-TRACE] exists(${path}): inner.stat() → OK (exists)`);
       return true;
     } catch (err) {
-      if (this.isNotFound(err)) return false;
+      if (this.isNotFound(err)) {
+        console.log(`[CACHE-TRACE] exists(${path}): inner.stat() → NotFound`);
+        return false;
+      }
+      console.log(`[CACHE-TRACE] exists(${path}): inner.stat() → ERROR: ${err}`);
       throw err;
     }
   }
@@ -338,7 +344,9 @@ export class CachedFileSystem {
   }
 
   async unlink(path: string): Promise<void> {
+    console.log(`[CACHE-TRACE] unlink(${path}): calling inner.unlink()`);
     await this.inner.unlink(path);
+    console.log(`[CACHE-TRACE] unlink(${path}): inner.unlink() OK, invalidating cache`);
     await this.invalidate(path);
   }
 
