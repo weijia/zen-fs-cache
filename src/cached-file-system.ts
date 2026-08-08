@@ -285,7 +285,19 @@ export class CachedFileSystem {
 
   async exists(path: string): Promise<boolean> {
     try {
-      console.log(`[CACHE-TRACE] exists(${path}): calling inner.stat()`);
+      const innerType = this.inner?.constructor?.name ?? typeof this.inner;
+      const hasStat = typeof this.inner?.stat === 'function';
+      const hasExists = typeof this.inner?.exists === 'function';
+      console.log(`[CACHE-TRACE] exists(${path}): inner type=${innerType} hasStat=${hasStat} hasExists=${hasExists}`);
+      // Call inner.exists() if available — it may be cheaper than stat()
+      // (e.g. RemoteStorageFileSystem.exists() checks existenceCache first)
+      if (hasExists) {
+        console.log(`[CACHE-TRACE] exists(${path}): calling inner.exists()`);
+        const result = await this.inner.exists(path);
+        console.log(`[CACHE-TRACE] exists(${path}): inner.exists() → ${result}`);
+        return result;
+      }
+      console.log(`[CACHE-TRACE] exists(${path}): no inner.exists(), falling back to inner.stat()`);
       await this.inner.stat(path);
       console.log(`[CACHE-TRACE] exists(${path}): inner.stat() → OK (exists)`);
       return true;
