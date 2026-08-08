@@ -288,25 +288,38 @@ export class CachedFileSystem {
       const innerType = this.inner?.constructor?.name ?? typeof this.inner;
       const hasStat = typeof this.inner?.stat === 'function';
       const hasExists = typeof this.inner?.exists === 'function';
-      console.log(`[CACHE-TRACE] exists(${path}): inner type=${innerType} hasStat=${hasStat} hasExists=${hasExists}`);
+      // Try to get a backend identifier for better traceability
+      const backendName = (this.inner as any)?.backendName ?? (this.inner as any)?.constructor?.name ?? 'unknown';
+      console.log(`[CACHE-EXISTS] exists(${path}): inner=${innerType} backend=${backendName} hasStat=${hasStat} hasExists=${hasExists}`);
+
+      // Check if we have a cached stat entry that could shortcut
+      const statKey = `stat:${path}`;
+      const cachedStat = await this.store.get(statKey);
+      if (cachedStat) {
+        const age = Date.now() - cachedStat.cachedAt;
+        console.log(`[CACHE-EXISTS] exists(${path}): cached stat entry found, age=${age}ms, ttlMs=${this.ttlMs}`);
+      } else {
+        console.log(`[CACHE-EXISTS] exists(${path}): no cached stat entry`);
+      }
+
       // Call inner.exists() if available — it may be cheaper than stat()
       // (e.g. RemoteStorageFileSystem.exists() checks existenceCache first)
       if (hasExists) {
-        console.log(`[CACHE-TRACE] exists(${path}): calling inner.exists()`);
+        console.log(`[CACHE-EXISTS] exists(${path}): → calling inner.exists() [backend=${backendName}]`);
         const result = await this.inner.exists(path);
-        console.log(`[CACHE-TRACE] exists(${path}): inner.exists() → ${result}`);
+        console.log(`[CACHE-EXISTS] exists(${path}): ← inner.exists() [backend=${backendName}] → ${result}`);
         return result;
       }
-      console.log(`[CACHE-TRACE] exists(${path}): no inner.exists(), falling back to inner.stat()`);
+      console.log(`[CACHE-EXISTS] exists(${path}): no inner.exists(), falling back to inner.stat() [backend=${backendName}]`);
       await this.inner.stat(path);
-      console.log(`[CACHE-TRACE] exists(${path}): inner.stat() → OK (exists)`);
+      console.log(`[CACHE-EXISTS] exists(${path}): ← inner.stat() [backend=${backendName}] → OK (exists)`);
       return true;
     } catch (err) {
       if (this.isNotFound(err)) {
-        console.log(`[CACHE-TRACE] exists(${path}): inner.stat() → NotFound`);
+        console.log(`[CACHE-EXISTS] exists(${path}): ← inner.stat() → NotFound`);
         return false;
       }
-      console.log(`[CACHE-TRACE] exists(${path}): inner.stat() → ERROR: ${err}`);
+      console.log(`[CACHE-EXISTS] exists(${path}): ← inner.stat() → ERROR: ${err}`);
       throw err;
     }
   }
@@ -356,9 +369,10 @@ export class CachedFileSystem {
   }
 
   async unlink(path: string): Promise<void> {
-    console.log(`[CACHE-TRACE] unlink(${path}): calling inner.unlink()`);
+    const backendName = (this.inner as any)?.backendName ?? (this.inner as any)?.constructor?.name ?? 'unknown';
+    console.log(`[CACHE-UNLINK] unlink(${path}): calling inner.unlink() [backend=${backendName}]`);
     await this.inner.unlink(path);
-    console.log(`[CACHE-TRACE] unlink(${path}): inner.unlink() OK, invalidating cache`);
+    console.log(`[CACHE-UNLINK] unlink(${path}): inner.unlink() OK [backend=${backendName}], invalidating cache`);
     await this.invalidate(path);
   }
 
