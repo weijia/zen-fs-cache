@@ -23,6 +23,13 @@ export class MemoryCacheStore implements CacheStore {
   async clear(): Promise<void> {
     this.store.clear();
   }
+
+  async purgeKeepFiles(): Promise<void> {
+    for (const key of Array.from(this.store.keys())) {
+      const base = key === '/' ? '' : key.split('/').pop() ?? '';
+      if (base === '.keep') this.store.delete(key);
+    }
+  }
 }
 
 function idbAvailable(): boolean {
@@ -131,6 +138,30 @@ export class IdbCacheStore implements CacheStore {
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(this.storeName, 'readwrite');
         tx.objectStore(this.storeName).clear();
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch {
+      // best-effort cache
+    }
+  }
+
+  async purgeKeepFiles(): Promise<void> {
+    try {
+      const db = await this.open();
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(this.storeName, 'readwrite');
+        const store = tx.objectStore(this.storeName);
+        const req = store.getAllKeys();
+        req.onsuccess = () => {
+          const keys = (req.result as string[]) ?? [];
+          for (const raw of keys) {
+            const path = raw.startsWith(this.prefix) ? raw.slice(this.prefix.length) : raw;
+            const base = path === '/' ? '' : path.split('/').pop() ?? '';
+            if (base === '.keep') store.delete(raw);
+          }
+        };
+        req.onerror = () => reject(req.error);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });

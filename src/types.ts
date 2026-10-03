@@ -212,4 +212,12 @@ export interface CacheStore {
   set(key: string, value: CacheValue): Promise<void>;
   delete(key: string): Promise<void>;
   clear(): Promise<void>;
+  /**
+   * Remove any cached entry whose path is the internal `.keep` directory
+   * placeholder. Older builds cached backend-internal `.keep` files (used to
+   * keep empty directories alive on Git/RemoteStorage backends); since those
+   * are now hidden from callers, the cached entries are dead weight. Best-effort
+   * and safe to call on every startup.
+   */
+  purgeKeepFiles(): Promise<void>;
 }

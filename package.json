@@ -1,6 +1,6 @@
 {
   "name": "zen-fs-cache",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "type": "module",
   "description": "Generic caching layer for any zen-fs compatible filesystem. Adds HTTP-style revalidation (ETag / Last-Modified / 304) and pluggable storage backends (memory / IndexedDB) on top of any remote or local zen-fs backend.",
   "main": "dist/index.cjs",
